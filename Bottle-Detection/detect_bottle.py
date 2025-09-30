@@ -23,7 +23,7 @@ class BottleDetector:
                 (170, 50, 50), (180, 255, 255)    # Upper red range
             ],
             'green': [(30, 40, 40), (90, 255, 255)],  # Expanded green range for lime/bright green
-            'blue': [(90, 50, 50), (130, 255, 255)]
+            'blue': [(80, 40, 40), (140, 255, 255)]   # Expanded blue range for deep/dark blues
         }
     
     def debug_all_detections(self, image_path: str, confidence_threshold: float = 0.25) -> None:
@@ -35,10 +35,10 @@ class BottleDetector:
         # Run inference with lower threshold
         results = self.model(image_path, conf=confidence_threshold)
         
-        # COCO class names for reference
+        # COCO class names for reference (YOLOv11 corrected)
         coco_classes = {
-            39: "bottle", 47: "cup", 46: "wine glass", 44: "bowl", 
-            41: "wine bottle", 40: "vase", 67: "dining table"
+            39: "bottle", 41: "cup", 40: "wine glass", 45: "bowl", 
+            75: "vase", 79: "toothbrush", 67: "dining table"
         }
         
         for result in results:
@@ -55,7 +55,7 @@ class BottleDetector:
                 print("No objects detected")
         print("=" * 50)
 
-    def detect_bottles(self, image_path: str, confidence_threshold: float = 0.3) -> Tuple[List[Dict], Any, Any]:
+    def detect_bottles(self, image_path: str, confidence_threshold: float = 0.1) -> Tuple[List[Dict], Any, Any]:
         """
         Detect bottles in the image using YOLOv11n
         """
@@ -79,15 +79,20 @@ class BottleDetector:
                     class_id = int(box.cls[0])
                     confidence = float(box.conf[0])
                     
+                    print(f"  Found object: Class {class_id}, Confidence: {confidence:.3f}")
+                    
                     # Check if detected object is a bottle or similar container
-                    # Class 39: bottle, Class 47: cup, Class 40: vase
-                    bottle_classes = [39, 47, 40]  # bottle, cup, and vase classes
+                    # Class 39: bottle, Class 41: cup, Class 40: wine glass, Class 45: bowl, Class 75: vase
+                    bottle_classes = [39, 41, 40, 45, 75]  # Updated with correct YOLOv11 class IDs
                     if class_id in bottle_classes and confidence >= confidence_threshold:
+                        print(f"  ✅ Processing as bottle-like object (Class {class_id})")
                         # Get bounding box coordinates
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
                         
                         # Extract bottle region
                         bottle_roi = image[y1:y2, x1:x2]
+                        
+                        print(f"  ROI size: {bottle_roi.shape}")
                         
                         # Determine bottle color
                         color = self.determine_bottle_color(bottle_roi)
@@ -104,6 +109,11 @@ class BottleDetector:
                         label = f"Bottle ({color}): {confidence:.2f}"
                         cv2.putText(image, label, (x1, y1-10), 
                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    else:
+                        if class_id in bottle_classes:
+                            print(f"  ❌ Object class {class_id} rejected due to low confidence ({confidence:.3f} < {confidence_threshold})")
+                        else:
+                            print(f"  ❌ Object class {class_id} not in bottle classes {bottle_classes}")
         
         return bottle_detections, image, original_image
     
@@ -172,14 +182,18 @@ class BottleDetector:
         # Debug: Print color scores
         print(f"  Color analysis: Red={color_scores['red']:.3f}, Green={color_scores['green']:.3f}, Blue={color_scores['blue']:.3f}")
         
-        # Find dominant color with lower threshold for better detection
+        # Find dominant color with very low threshold for dark/deep colors
         max_score = max(color_scores.values())
-        if max_score > 0.05:  # Lowered threshold from 0.1 to 0.05 (5% of pixels)
+        if max_score > 0.02:  # Lowered threshold to 0.02 (2% of pixels) for deep colors
             dominant_color = max(color_scores.keys(), key=lambda k: color_scores[k])
             print(f"  Detected color: {dominant_color} (score: {max_score:.3f})")
             return dominant_color
         else:
             print(f"  No dominant color found (max score: {max_score:.3f})")
+            # Special case: if blue score is highest even if below threshold, consider it blue
+            if color_scores['blue'] > color_scores['red'] and color_scores['blue'] > color_scores['green'] and color_scores['blue'] > 0.01:
+                print(f"  Special case: Detected as blue due to relative dominance")
+                return "blue"
             return "other"
     
     def process_image(self, image_path: str, output_path: Optional[str] = None, show_result: bool = True) -> Optional[List[Dict]]:
