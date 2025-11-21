@@ -11,8 +11,6 @@ import numpy as np
 class BottleDetector:
     def __init__(self, model_path=None):
         self.model = YOLO(model_path or "yolo11n.pt")
-
-        # HSV RANGES
         self.color_ranges = {
             'red': [
                 (0, 50, 50), (10, 255, 255),
@@ -49,17 +47,16 @@ class BottleDetector:
             score = color_pixels / total_pixels if total_pixels > 0 else 0
             color_scores[color_name] = score
 
-        # Decision
         max_score = max(color_scores.values())
         if max_score > 0.02:
             return max(color_scores, key=color_scores.get)
         elif color_scores['blue'] > 0.01:
             return 'blue'
-
         return 'other'
 
     def process_frame(self, frame, confidence_threshold=0.1):
-        results = self.model(frame, conf=confidence_threshold)
+        # Suppress YOLO internal print logs
+        results = self.model(frame, conf=confidence_threshold, verbose=False)
         detections = []
 
         for result in results:
@@ -67,16 +64,13 @@ class BottleDetector:
                 for box in result.boxes:
                     class_id = int(box.cls[0])
                     confidence = float(box.conf[0])
-
                     bottle_classes = [39, 41, 40, 45, 75]
                     if class_id in bottle_classes and confidence >= confidence_threshold:
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
                         roi = frame[y1:y2, x1:x2]
                         color = self.determine_bottle_color(roi)
-
                         detections.append(color)
 
-                        # Draw
                         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                         cv2.putText(frame, f"Bottle ({color})", (x1, y1 - 10),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
@@ -88,15 +82,25 @@ class BottleDetectionNode(Node):
     def __init__(self):
         super().__init__('cv_bottle_detector_node')
 
-        # Publisher to the xArm pipeline
         self.publisher = self.create_publisher(String, '/bottle_detection_result', 10)
-
         self.detector = BottleDetector()
         self.cap = cv2.VideoCapture(0)
 
-        self.get_logger().info("Multi-bottle detection node running...")
+        # Subscribe to requested colors from conversational node
+        self.requested_colors = []
+        self.create_subscription(
+            String,
+            '/requested_bottle_color',
+            self.requested_colors_callback,
+            10
+        )
 
+        self.get_logger().info("Multi-bottle detection node running...")
         threading.Thread(target=self.capture_loop, daemon=True).start()
+
+    def requested_colors_callback(self, msg: String):
+        self.requested_colors = msg.data.split()  # split on whitespace
+        self.get_logger().info(f"Requested colors updated: {self.requested_colors}")
 
     def capture_loop(self):
         while rclpy.ok():
@@ -106,19 +110,15 @@ class BottleDetectionNode(Node):
 
             detected_colors, annotated_frame = self.detector.process_frame(frame)
 
-            # Keep only red, green, blue
-            filtered = [c for c in detected_colors if c in ['red', 'green', 'blue']]
+            # Only keep detected colors that match requested colors
+            filtered = [c for c in detected_colors if c in self.requested_colors]
             filtered = list(set(filtered))  # remove duplicates
 
             msg = String()
-
             if filtered:
                 msg.data = "detected: " + " ".join(filtered)
-            else:
-                msg.data = "detected: none"
-
-            self.publisher.publish(msg)
-            self.get_logger().info(f"Published: {msg.data}")
+                self.publisher.publish(msg)
+                self.get_logger().info(f"Published filtered colors: {msg.data}")
 
             cv2.imshow("Bottle Detection", annotated_frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
