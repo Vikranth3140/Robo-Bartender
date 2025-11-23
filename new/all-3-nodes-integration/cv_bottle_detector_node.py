@@ -110,15 +110,18 @@ class BottleDetectionNode(Node):
 
             detected_colors, annotated_frame = self.detector.process_frame(frame)
 
-            # Only keep detected colors that match requested colors
-            filtered = [c for c in detected_colors if c in self.requested_colors]
-            filtered = list(set(filtered))  # remove duplicates
+            # Convert lists → sets
+            detected_set = set(detected_colors)
+            requested_set = set(self.requested_colors)
 
-            msg = String()
-            if filtered:
-                msg.data = "detected: " + " ".join(filtered)
+            # Condition: ALL requested colors must be present in detection
+            if requested_set and requested_set.issubset(detected_set):
+                msg = String()
+                msg.data = "detected: " + " ".join(sorted(requested_set))
                 self.publisher.publish(msg)
-                self.get_logger().info(f"Published filtered colors: {msg.data}")
+                self.get_logger().info(f"Published: {msg.data}")
+            else:
+                self.get_logger().info("Cannot process order: required colors not fully detected.")
 
             cv2.imshow("Bottle Detection", annotated_frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
