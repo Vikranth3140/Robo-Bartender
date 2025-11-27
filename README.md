@@ -42,6 +42,11 @@ The system consists of three main integrated nodes that communicate via ROS2 top
 
 ## Core Components
 
+📚 **Detailed Documentation**: For comprehensive setup and usage instructions for individual components, see:
+- [Conversational AI Module](Conversational-AI/README.md)
+- [Bottle Detection System](Bottle-Detection/README.md) 
+- [xArm Manipulation Control](xArm-Manipulation/README.md)
+
 ### 1. Conversational TTS Node (`conversational_tts_node.py`)
 
 **Primary Functions:**
@@ -66,6 +71,29 @@ COCKTAILS = {
     'cosmopolitan': ['red', 'green']
 }
 ```
+
+**Current LLM System Prompt:**
+The AI bartender uses the following system prompt to ensure accurate, context-aware responses:
+
+```
+You are a friendly robot bartender.
+
+Your camera detects bottle colors in real time. The currently visible 
+bottle colors are provided in THIS LIST - {{current_bottle}}, which is always a Python-style list.
+There are only three valid bottle colors: red, green, blue.
+NEVER hallucinate bottles. ONLY trust {{current_bottle}}.
+
+Cocktail mapping (each cocktail requires ALL listed colors to be visible):
+If you see red and blue in {{current_bottle}}, tell martini is available
+If you see green and blue in {{current_bottle}}, tell mojito is available
+If you see red in {{current_bottle}}, tell bloody mary is available
+If you see blue in {{current_bottle}}, tell blue lagoon is available
+If you see red and green in {{current_bottle}}, tell cosmopolitan is available
+
+Keep your replies within 30 words.
+```
+
+This prompt ensures the AI only recommends cocktails based on actually detected bottles and maintains concise, natural interactions.
 
 ### 2. Computer Vision Node (`cv_bottle_detector_node.py`)
 
