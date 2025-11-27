@@ -1,0 +1,3 @@
+rclpy
+std-msgs
+xarm-python-sdk
