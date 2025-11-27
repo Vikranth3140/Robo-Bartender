@@ -81,6 +81,7 @@ class ConversationalTTSNode(Node):
     def __init__(self):
         super().__init__('conversational_tts_node')
 
+        # --- API KEYS ---
         if not ELEVEN_API_KEY:
             self.get_logger().error("ELEVENLABS_API_KEY not set. Exiting.")
             raise RuntimeError("Set ELEVENLABS_API_KEY")
@@ -89,36 +90,91 @@ class ConversationalTTSNode(Node):
             self.get_logger().error("GROQ_API_KEY not set. Exiting.")
             raise RuntimeError("Set GROQ_API_KEY")
 
-        # ROS publishers/subscribers
+        self.current_bottle_colors = []
+
+        # --- Vision: current bottle seen by camera ---
+        self.current_bottle_color = "none"  # "red", "green", "blue", "none", "other"
+
+        # Subscribe to CV detection result
+        self.create_subscription(
+            String,
+            '/bottle_detection_stream',
+            self._bottle_detection_callback,
+            10
+        )
+
+        # --- ROS topics ---
         self.color_pub = self.create_publisher(String, '/requested_bottle_color', 10)
         self.create_subscription(String, '/order_status', self._order_status_cb, 10)
 
-        # Groq client
+        # --- Groq client ---
         self.groq = Groq(api_key=GROQ_API_KEY)
 
-        # Conversation memory: keep until order done
-        self.conversation_history: List[dict] = [
-            {"role": "system", "content": "You are a friendly bartender. Keep replies short and helpful."},
-            {"role": "assistant", "content": "Hello! What can I get you to drink?"}
+        self.system_prompt_template = {
+            "role": "system",
+            "content": (
+                "You are a friendly robot bartender.\n\n"
+                "Your camera detects bottle colors in real time. The currently visible "
+                "bottle colors are provided in THIS LIST - {{current_bottle}}, which is always a Python-style list.\n"
+                "There are only three valid bottle colors: red, green, blue.\n"
+                "NEVER hallucinate bottles. ONLY trust {{current_bottle}}.\n\n"
+                "Cocktail mapping (each cocktail requires ALL listed colors to be visible):\n"
+                "If you see red and blue in {{current_bottle}}, tell martini is available\n"
+                "If you see green and blue in {{current_bottle}}, tell mojito is available\n"
+                "If you see red in {{current_bottle}}, tell bloody mary is available\n"
+                "If you see blue in {{current_bottle}}, tell blue lagoon is available\n"
+                "If you see red and green in {{current_bottle}}, tell cosmopolitan is available\n\n"
+                "Keep your replies within 30 words.\n"
+            )
+        }
+    
+
+        # --- Conversation history (starts fresh) ---
+        self.conversation_history = [
+            {"role": "assistant", "content": "Hello! I'm your robot bartender. What can I get you today?"}
         ]
 
-        # Control flags
-        self.active = True                      # overall node active
-        self.stt_running = True                 # stt loop running
+        # --- STT control ---
+        self.active = True
+        self.stt_running = True
         self._stt_loop = asyncio.new_event_loop()
+        self._stt_paused = False
+        self._stt_lock = threading.Lock()
 
-        self._stt_paused = False  # NEW: pause STT sender until response finishes
-        self._stt_lock = threading.Lock()  # lock to prevent race conditions
+        # Start STT in background
+        threading.Thread(target=self._start_stt_loop, daemon=True).start()
 
-        # Start STT websocket loop in a background thread
-        t = threading.Thread(target=self._start_stt_loop, daemon=True)
-        t.start()
-
-        self.get_logger().info("Conversational TTS node (Option B) initialized.")
-
+        self.get_logger().info("Conversational TTS node initialized with vision awareness")
     # -----------------------
     # STT loop runner (thread)
     # -----------------------
+
+    def _bottle_detection_callback(self, msg: String):
+        """
+        Called every time CV node publishes to /bottle_detection_result
+        Now supports multiple bottles visible at once!
+        """
+        text = msg.data.strip().lower()
+
+        if text.startswith("visible:"):
+            # Extract all detected colors
+            detected_colors = text.replace("visible:", "", 1).strip().split()
+            # Filter only valid colors (safety)
+            valid_colors = {'red', 'green', 'blue'}
+            detected_colors = [c for c in detected_colors if c in valid_colors]
+            print("Detected colors from CV:", detected_colors)
+            if detected_colors:
+                self.current_bottle_colors = detected_colors  # list: e.g. ['red', 'blue']
+                colors_str = " and ".join(detected_colors)
+                self.get_logger().info(f"Camera sees: {colors_str.upper()} bottle(s)")
+            else:
+                self.current_bottle_colors = []
+        else:
+            # No full match → nothing relevant visible
+            self.current_bottle_colors = []
+
+        # Always update the singular fallback for old logic (optional)
+        # self.current_bottle_color = self.current_bottle_colors[0] if self.current_bottle_colors else "none"
     def _start_stt_loop(self):
         asyncio.set_event_loop(self._stt_loop)
         try:
@@ -162,12 +218,13 @@ class ConversationalTTSNode(Node):
         Capture mic → send to websocket with SILENCE DETECTION.
         Sends audio chunks until silence lasts > SILENCE_DURATION_SEC.
         """
-        SILENCE_THRESHOLD = 5000        # adjust depending on mic sensitivity
+
+        SILENCE_THRESHOLD = 7000         # adjust to your mic
         SILENCE_DURATION_SEC = 2.0
         CHUNK_SEC = STT_CHUNK_SEC
 
         last_sound_time = time.time()
-        sending_enabled = True  # true while capturing active speech
+        sending_enabled = True  # true while sending speech audio
 
         while self.active and self.stt_running:
 
@@ -181,33 +238,52 @@ class ConversationalTTSNode(Node):
                 await asyncio.sleep(0.05)
                 continue
 
+            # --- compute volume ---
             arr = np.frombuffer(pcm, dtype=np.int16)
-            volume = np.abs(arr).mean()
+            volume = float(np.abs(arr).mean())
 
+            # --- sound detected ---
             if volume > SILENCE_THRESHOLD:
                 last_sound_time = time.time()
 
-            # Silence detection
+            # --- silence → commit ---
             if sending_enabled and (time.time() - last_sound_time > SILENCE_DURATION_SEC):
+
                 self.get_logger().info("[STT] Silence detected → committing speech")
-                await ws.send(json.dumps({"message_type": "input_audio_buffer.commit"}))
+
+                # IMPORTANT: wait a moment for last chunks to flush
+                await asyncio.sleep(0.25)
+
+                await ws.send(json.dumps({
+                    "message_type": "input_audio_buffer.commit"
+                }))
+
                 sending_enabled = False
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.1)
                 continue
+
+            # --- new speech after commit ---
             elif not sending_enabled and volume > SILENCE_THRESHOLD:
-                # Resume sending after new speech detected
                 sending_enabled = True
+                last_sound_time = time.time()
+                self.get_logger().info("[STT] Speech resumed")
 
-            b64 = base64.b64encode(pcm).decode("ascii")
-            msg = {
-                "message_type": "input_audio_chunk",
-                "audio_base_64": b64,
-                "sample_rate": STT_SAMPLE_RATE,
-                "commit": False
-            }
+            # --- only send chunks while sending_enabled ---
+            if sending_enabled:
+                b64 = base64.b64encode(pcm).decode("ascii")
+                msg = {
+                    "message_type": "input_audio_chunk",
+                    "audio_base_64": b64,
+                    "sample_rate": STT_SAMPLE_RATE,
+                    "commit": False
+                }
+                await ws.send(json.dumps(msg))
+                self.get_logger().info(
+                    f"[STT] Sending chunk → PCM {len(pcm)} bytes | Volume {volume:.1f}"
+                )
 
-            await ws.send(json.dumps(msg))
-            self.get_logger().info(f"[STT] Sending chunk → PCM {len(pcm)} bytes | Volume {volume:.1f}")
+            await asyncio.sleep(0.001)  # yield control
+
 
     async def _stt_receiver(self, ws):
         async for raw in ws:
@@ -294,15 +370,65 @@ class ConversationalTTSNode(Node):
 
     def _call_groq(self) -> str:
         try:
+            colors = self.current_bottle_colors  # e.g. ["red", "green"]
+            print("Detected bottle colors:\n", colors)
+
+            # ---------------------------------------------------------
+            # 1. Create human-readable description ONLY for debugging
+            # ---------------------------------------------------------
+            if not colors or colors == ["none"]:
+                readable = "no bottles"
+            elif len(colors) == 1:
+                readable = f"a {colors[0]} bottle"
+            else:
+                # Multi-color readable format
+                if len(colors) == 2:
+                    readable = f"{colors[0]} and {colors[1]} bottles"
+                else:
+                    readable = ", ".join(colors[:-1]) + f", and {colors[-1]} bottles"
+
+            # Print for debugging only
+            print(f"Readable (debug only): {readable}")
+
+            # ---------------------------------------------------------
+            # 2. LLM prompt MUST receive an EXACT Python list string
+            # ---------------------------------------------------------
+            # Examples:
+            #   []                  → "[]"
+            #   ["red"]             → "['red']"
+            #   ["green","red"]     → "['green', 'red']"
+            #
+            # repr() creates EXACTLY that format
+            current_list_str = repr(colors)
+            print("Python list passed to LLM:", current_list_str)
+
+            # ---------------------------------------------------------
+            # 3. Build correct system prompt with the list injected
+            # ---------------------------------------------------------
+            system_msg = self.system_prompt_template.copy()
+            system_msg["content"] = system_msg["content"].replace("{{current_bottle}}",
+                                                                current_list_str)
+
+            print("*** GROQ SYSTEM PROMPT ***\n")
+            print(system_msg["content"])
+
+            messages = [system_msg] + self.conversation_history
+
+            # ---------------------------------------------------------
+            # 4. Call the model
+            # ---------------------------------------------------------
             resp = self.groq.chat.completions.create(
                 model=GROQ_MODEL,
-                messages=self.conversation_history
+                messages=messages,
+                temperature=0.7,
+                max_tokens=150
             )
-            reply = resp.choices[0].message.content
-            return reply
+
+            return resp.choices[0].message.content.strip()
+
         except Exception as e:
-            self.get_logger().error(f"Groq call failed: {e}")
-            return ""
+            self.get_logger().error(f"GROQ error: {e}")
+            return "Sorry, I had trouble understanding that."
 
     # -----------------------
     # TTS WebSocket helper (async) — collects audio chunks and returns bytes
@@ -416,7 +542,7 @@ class ConversationalTTSNode(Node):
             loop.close()
         except Exception as e:
             self.get_logger().error(f"TTS sync error: {e}")
-
+    
     # -----------------------
     # order_status subscriber (reset history on "done")
     # -----------------------
