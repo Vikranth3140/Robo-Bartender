@@ -192,18 +192,20 @@ TTS_VOICE_ID = "your_elevenlabs_voice_id"
 ### Quick Start
 
 ```bash
-# Terminal 1: Start ROS2 core
-ros2 daemon start
+# Setup ROS2 workspace and package
+cd ~/ros2_ws
+ros2 pkg create --build-type ament_python robo-bartender
+colcon build --symlink-install
+source install/setup.bash
 
-# Terminal 2: Launch Computer Vision Node  
-cd "Integrated Nodes"
-python cv_bottle_detector_node.py
+# Terminal 1: Launch Conversational Node
+ros2 run robo-bartender conversational_tts_node
+
+# Terminal 2: Launch Computer Vision Node
+ros2 run robo-bartender cv_bottle_detector_node
 
 # Terminal 3: Launch Robotic Arm Node
-python xarm_node.py
-
-# Terminal 4: Launch Conversational Node
-python conversational_tts_node.py
+ros2 run robo-bartender xarm_node
 ```
 
 ### System Verification
