@@ -35,8 +35,8 @@ class ConversationalTTSNode(Node):
         )
 
         # ElevenLabs setup
-        api_key = "sk_80dd87c8c862e73011f0bcfe3f6950a053e77ef1dc72962e"
-        agent_id = "agent_2401ka6c0s1pe8v9xge3nvmjpr87"
+        api_key = 'your_api_key_here'  # replace with your ElevenLabs API key
+        agent_id = 'your_agent_id_here'  # replace with your agent ID
 
         self.elevenlabs = ElevenLabs(api_key=api_key)
 
