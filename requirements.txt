@@ -1,2 +1,23 @@
+# ---- ROS2 ----
+rclpy
+std-msgs
+
+# ---- Audio / STT / TTS ----
 elevenlabs
 pyaudio
+sounddevice
+websockets
+numpy
+groq
+
+# ---- Computer Vision ----
+opencv-python
+ultralytics
+
+# ---- Arm Control ----
+xarm-python-sdk
+
+# ---- Utilities ----
+typing-extension
+python-dotenv
+requests

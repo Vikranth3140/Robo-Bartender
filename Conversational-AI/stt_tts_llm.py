@@ -18,8 +18,8 @@ from groq import Groq
 # -----------------------
 # CONFIG (set via env or edit here)
 # -----------------------
-ELEVEN_API_KEY = "your_api_key_here"  # required
-GROQ_API_KEY = "your_groq_api_key_here"          # required
+ELEVEN_API_KEY = "your_api_key_here"            # required
+GROQ_API_KEY = "your_groq_api_key_here"         # required
 
 # STT settings
 ELEVEN_STT_MODEL_ID = "scribe_v2_realtime"
@@ -27,7 +27,7 @@ STT_SAMPLE_RATE = 16000
 STT_CHUNK_SEC = 0.5
 
 # TTS settings
-TTS_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb"
+TTS_VOICE_ID = "your_voice_id_here"
 TTS_MODEL_ID = "eleven_flash_v2_5"
 TTS_OUTPUT_SR = 22050
 
